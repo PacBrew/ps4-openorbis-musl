@@ -3,6 +3,8 @@
 #include <errno.h>
 #include "malloc_impl.h"
 
+#ifndef PS4_FLEXIBLE_MEMORY
+
 void *__memalign(size_t align, size_t len)
 {
 	unsigned char *mem, *new;
@@ -52,3 +54,4 @@ void *__memalign(size_t align, size_t len)
 }
 
 weak_alias(__memalign, memalign);
+#endif

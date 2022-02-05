@@ -14,6 +14,155 @@
 #define inline inline __attribute__((always_inline))
 #endif
 
+#ifdef PS4_FLEXIBLE_MEMORY
+
+#define MEM_SIZE (0xA0000000) /* 2600 MiB */
+#define MEM_ALIGN (16UL * 1024)
+#define SCE_KERNEL_PROT_CPU_RW 0x02
+#define SCE_KERNEL_MAP_FIXED 0x10
+
+typedef void *OrbisMspace;
+typedef struct OrbisMallocManagedSize {
+    unsigned short sz;
+    unsigned short ver;
+    unsigned int reserv;
+    size_t maxSysSz;
+    size_t curSysSz;
+    size_t maxUseSz;
+    size_t curUseSz;
+} OrbisMallocManagedSize;
+
+OrbisMspace sceLibcMspaceCreate(char *, void *, size_t, unsigned int);
+
+int sceLibcMspaceDestroy(OrbisMspace);
+
+void *sceLibcMspaceMalloc(OrbisMspace, size_t size);
+
+int sceLibcMspaceFree(OrbisMspace, void *);
+
+void *sceLibcMspaceCalloc(OrbisMspace, size_t, size_t);
+
+void *sceLibcMspaceMemalign(OrbisMspace, size_t, size_t);
+
+void *sceLibcMspaceRealloc(OrbisMspace, void *, size_t);
+
+void *sceLibcMspaceReallocalign(OrbisMspace, void *, size_t, size_t);
+
+int sceLibcMspacePosixMemalign(OrbisMspace, void **, size_t, size_t);
+
+int sceLibcMspaceMallocStats(OrbisMspace, OrbisMallocManagedSize *);
+
+int sceLibcMspaceMallocStatsFast(OrbisMspace, OrbisMallocManagedSize *);
+
+size_t sceLibcMspaceMallocUsableSize(void *);
+
+int sceKernelMapNamedSystemFlexibleMemory(void **, size_t, int, int, const char *);
+
+int sceKernelReserveVirtualRange(void **, size_t, int, size_t);
+
+int sceKernelReleaseFlexibleMemory(void *, size_t);
+
+int sceKernelMunmap(void *, size_t);
+
+static OrbisMspace s_mspace = 0;
+static OrbisMallocManagedSize s_mmsize;
+static void *s_mem_start = 0;
+static size_t s_mem_size = MEM_SIZE;
+
+int malloc_init(void)
+{
+    int res;
+
+    if (s_mspace)
+        return 0;
+
+    res = sceKernelReserveVirtualRange(&s_mem_start, MEM_SIZE, 0, MEM_ALIGN);
+    if (res < 0)
+        return 1;
+
+    res = sceKernelMapNamedSystemFlexibleMemory(
+            &s_mem_start, MEM_SIZE, SCE_KERNEL_PROT_CPU_RW, SCE_KERNEL_MAP_FIXED, "User Mem");
+    if (res < 0)
+        return 1;
+
+    s_mspace = sceLibcMspaceCreate("User Mspace", s_mem_start, s_mem_size, 0);
+    if (!s_mspace)
+        return 1;
+
+    s_mmsize.sz = sizeof(s_mmsize);
+    s_mmsize.ver = 1;
+    res = sceLibcMspaceMallocStatsFast(s_mspace, &s_mmsize);
+    return 0;
+}
+
+int malloc_finalize(void)
+{
+    int res;
+
+    if (s_mspace)
+    {
+        res = sceLibcMspaceDestroy(s_mspace);
+        if (res != 0)
+            return 1;
+    }
+
+    res = sceKernelReleaseFlexibleMemory(s_mem_start, s_mem_size);
+    if (res < 0)
+        return 1;
+
+    res = sceKernelMunmap(s_mem_start, s_mem_size);
+    if (res < 0)
+        return 1;
+
+    return 0;
+}
+
+void *malloc(size_t size)
+{
+    if (!s_mspace)
+        malloc_init();
+
+    return sceLibcMspaceMalloc(s_mspace, size);
+}
+
+void free(void *ptr)
+{
+    if (!ptr || !s_mspace)
+        return;
+
+    sceLibcMspaceFree(s_mspace, ptr);
+}
+
+void *calloc(size_t nelem, size_t size)
+{
+    if (!s_mspace)
+        malloc_init();
+
+    return sceLibcMspaceCalloc(s_mspace, nelem, size);
+}
+
+void *realloc(void *ptr, size_t size)
+{
+    if (!s_mspace)
+        malloc_init();
+
+    return sceLibcMspaceRealloc(s_mspace, ptr, size);
+}
+
+int __malloc_replaced;
+
+void *__memalign(size_t align, size_t len)
+{
+  if (!s_mspace)
+        malloc_init();
+
+    return sceLibcMspaceMemalign(s_mspace, align, len);
+}
+
+weak_alias(__memalign, memalign);
+
+#else
+
 static struct {
 	volatile uint64_t binmap;
 	struct bin bins[64];
@@ -546,3 +695,4 @@ void __malloc_donate(char *start, char *end)
 	c->csize = n->psize = C_INUSE | (end-start);
 	__bin_chunk(c);
 }
+#endif
